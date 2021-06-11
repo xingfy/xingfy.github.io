@@ -34,8 +34,10 @@
 <meta property="og:image" content="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210606174927.png">
 <meta property="og:image" content="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210606180023.png">
 <meta property="og:image" content="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210607114849.png">
+<meta property="og:image" content="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210607161127.png">
+<meta property="og:image" content="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210607172618.png">
 <meta property="article:published_time" content="2021-06-06T09:01:40.000Z">
-<meta property="article:modified_time" content="2021-06-07T06:36:22.188Z">
+<meta property="article:modified_time" content="2021-06-11T01:04:19.321Z">
 <meta property="article:author" content="xingfy">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:image" content="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210606170743.png">
@@ -196,7 +198,7 @@
                   <i class="far fa-calendar-check"></i>
                 </span>
                 <span class="post-meta-item-text">更新于</span>
-                <time title="修改时间：2021-06-07 14:36:22" itemprop="dateModified" datetime="2021-06-07T14:36:22+08:00">2021-06-07</time>
+                <time title="修改时间：2021-06-11 09:04:19" itemprop="dateModified" datetime="2021-06-11T09:04:19+08:00">2021-06-11</time>
               </span>
             <span class="post-meta-item">
               <span class="post-meta-item-icon">
@@ -282,6 +284,39 @@
 <li><p>G1的卡表（处理跨带指针）更为复杂，而且每个堆中的Region都必须有一份卡表，导致G1的记忆集（和其他内存消耗）可能会占整个堆容量的20%乃至更多的内存空间。</p>
 </li>
 </ol>
+<h4 id="8、Shenandoah收集器"><a href="#8、Shenandoah收集器" class="headerlink" title="8、Shenandoah收集器"></a>8、Shenandoah收集器</h4><h5 id="8-1、Shenandoah与G1的区别："><a href="#8-1、Shenandoah与G1的区别：" class="headerlink" title="8.1、Shenandoah与G1的区别："></a>8.1、Shenandoah与G1的区别：</h5><ol>
+<li>支持并发整理算法，G1在回收阶段不能与用户线程并发</li>
+<li>Shenandoah默认不适用分代收集</li>
+<li>Shenandoah摒弃了G1中耗费大量内存和计算资源去维护的记忆集，改用名为”连接矩阵“的全局数据结构来记录跨Region的引用关系，降低了处理跨代指针时的记忆集维护消耗，也降低了伪共享问题的发生概率。</li>
+</ol>
+<img src="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210607161127.png" style="zoom:50%;" />
+
+<h5 id="8-2、Shenandoah工作过程"><a href="#8-2、Shenandoah工作过程" class="headerlink" title="8.2、Shenandoah工作过程"></a>8.2、Shenandoah工作过程</h5><ol>
+<li>初始标记：与G1一样，首先标记与GC Roots直接关联的对象，这个阶段仍是”Stop The World“的，但停顿时间与堆大小无关，只与GC Roots的数量有关。</li>
+<li>并发标记：与G1一样，遍历对象图，标记处全部可达的对象，这个阶段是与用户线程一起并发的，时间长短取决于堆中存活的对象数量以及对象图的结构复杂程度。</li>
+<li>最终标记：与G1一样，处理剩余SATB扫描，并在这个阶段统计出回收价值最高的Region，将这些Region构成一组回收集。最终标记阶段也会有一小段短暂的停顿。</li>
+<li>并发清理：这个阶段用户清理那些整个区域内连一个存活对象都没有找到的Region。</li>
+<li>并发回收：这个阶段是Shenandoah与之前HotSpot中其他收集器的核心差异。在这个阶段，Shenandoah要把回收集里面的存活对象先复制一份到其他未被使用的Region之中。复制对象这件事情如果将用户线程冻结起来再做那时相当简单的。但如果两者必须要同时并发进行的话，就变得复杂起来了。其困难点在移动对象的同时，用户线程仍然可能不停对被移动对象进行读写访问，移动对象时一次性的行为，但移动之后整个内存中所有指向该对象的引用都还是就对象的地址，这是很难一瞬间全部改变过来的。<ul>
+<li>在原有对象布局结构的最前面统一增加一个新的引用字段，在正常不处于并发移动的情况下，该指针指向对象自己。（并发情况：CAS保证）</li>
+</ul>
+</li>
+<li>初始引用更新：并发回收阶段复制对象结束后，还需要把堆中所有指向就对象的引用修正到复制后的新地址，这个操作称为引用更新。这个阶段只是建立一个线程集合点，确保所有并发回收阶段中进行的收集器线程都已完成分配给它们的对象移动任务。这个阶段会产生一个非常短暂的停顿。</li>
+<li>并发引用更新：真正开始进行引用更新操作，这个阶段是与用户线程一起并发的。</li>
+<li>最终引用更新：解决了堆中的引用更新后，还要修正存在于GC Roots中的引用。这个阶段是Shenandoah的最后一次停顿。</li>
+<li>并发清理：经过并发回收和引用更新后，整个回收集中所有Region已再无存活对象，最后再调用一次并发清理过程来回收这些Region的内存空间，供以后新对象分配使用。</li>
+</ol>
+<h4 id="9、ZGC收集器"><a href="#9、ZGC收集器" class="headerlink" title="9、ZGC收集器"></a>9、ZGC收集器</h4><p>​        ZGC与Shenandoah和G1一样，也采用基于Region的堆内存布局，但与他们不同的是，ZGC的Region具有动态性——动态创建和销毁，以及动态的区域容量大小。</p>
+<img src="https://cdn.jsdelivr.net/gh/xingfy/PicBlogCDN//img/20210607172618.png" style="zoom:67%;" />
+
+<p>​        Shenandoah使用转发指针和读屏障来实现并发整理，ZGC虽然同样用到了读屏障，但用的却是与Shenandoah不同。</p>
+<p>​        ZGC收集器有一个标志性的设计是它采用的染色指针计数。</p>
+<p>​        ZGC的染色指针是直接把标记信息记在引用对象的指针上。</p>
+<h5 id="9-1、ZGC的运作过程"><a href="#9-1、ZGC的运作过程" class="headerlink" title="9.1、ZGC的运作过程"></a>9.1、ZGC的运作过程</h5><ul>
+<li>并发标记：与G1、Shenandoash一样，并发标记是遍历对象图做可达性分析的阶段，前后也要经过类似于G1、Shenandoash的初始标记、最终标记（尽管ZGC中的名字不叫这些）的短暂停顿，而这些停顿舰队所做的事情在目标上也是类似的。ZGC的标记是在指针上而不是在对象上进行的，标记阶段会更新染色指针中的Mardked0、Marked1标志位。</li>
+<li>并发预备重分配：这个阶段需要根据特定的查询条件统计得出本次收集过程要清理哪些Region，将这些Region组成重分配集。ZGC每次回收都会扫描所有的Region，用范围更大的扫描成本换取省去G1中记忆集的维护成本。因此，ZGC的重分配集只是决定了里面的存活对象会被重新复制到其他的Region中，里面的Region会被释放，而并不能说回收行为只是针对这个集合里面的Region进行，因为标记过程是针对全堆的。</li>
+<li>并发重分配：重分配是ZGC执行过程中的核心阶段，这个过程要把重分配集中的存货对象复制到新的Region中，并未重分配集中的每个Region维护一个转发表，记录从旧对象到新对象的转向关系。<font color="#0000FF">得益于染色指针的支持，ZGC收集器能仅从引用上就明确得知一个对象是否处于重分配集之中，如果用户线程此时并发访问了位于重分配集中的对象，这次访问将会被预置的内存屏障所截获，然后立即根据Region上的转发表记录将访问转发到新复制的对象上，并同时修正更新该引用的值，使其直接指向新对象</font>，<font color="#FF1493">ZGC将这种行为称为指针的”自愈“。</font>由于染色指针的存在，一旦重分配集中某个Region的存货对象都复制完毕后，这个Region就可以立即释放用户新对象的分配（但是转发表还得留着不能释放掉）。</li>
+<li>并发重映射：重映射所做的就是修正整个堆中指向重分配集中旧对象的所有引用，因为引用是可以自愈的，所以ZGC的并发重映射并不是一个必须要”迫切“去完成的任务。ZGC把并发冲映射阶段要做的工作，合并到了下一次垃圾收集循环中的并发标记阶段里去完成。</li>
+</ul>
 
     </div>
 
@@ -359,7 +394,7 @@
 
       <!--noindex-->
       <div class="post-toc-wrap sidebar-panel">
-          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-3"><a class="nav-link" href="#%E7%BB%8F%E5%85%B8%E5%9E%83%E5%9C%BE%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.</span> <span class="nav-text">经典垃圾收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-4"><a class="nav-link" href="#1%E3%80%81Serial%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.1.</span> <span class="nav-text">1、Serial收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#2%E3%80%81ParNew%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.2.</span> <span class="nav-text">2、ParNew收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#3%E3%80%81Parallel-Scavenge%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.3.</span> <span class="nav-text">3、Parallel Scavenge收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#4%E3%80%81Serial-Old%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.4.</span> <span class="nav-text">4、Serial Old收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#5%E3%80%81Parallel-Old%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.5.</span> <span class="nav-text">5、Parallel Old收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#6%E3%80%81CMS%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.6.</span> <span class="nav-text">6、CMS收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-5"><a class="nav-link" href="#CMS%E6%94%B6%E9%9B%86%E5%99%A8%E7%9A%84%E7%BC%BA%E7%82%B9%EF%BC%9A"><span class="nav-number">1.6.1.</span> <span class="nav-text">CMS收集器的缺点：</span></a></li></ol></li><li class="nav-item nav-level-4"><a class="nav-link" href="#7%E3%80%81Garbage-First%EF%BC%88G1%EF%BC%89%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.7.</span> <span class="nav-text">7、Garbage First（G1）收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-5"><a class="nav-link" href="#7-1%E3%80%81%E5%A4%87%E6%B3%A8%EF%BC%9A"><span class="nav-number">1.7.1.</span> <span class="nav-text">7.1、备注：</span></a></li></ol></li></ol></li></ol></div>
+          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-3"><a class="nav-link" href="#%E7%BB%8F%E5%85%B8%E5%9E%83%E5%9C%BE%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.</span> <span class="nav-text">经典垃圾收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-4"><a class="nav-link" href="#1%E3%80%81Serial%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.1.</span> <span class="nav-text">1、Serial收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#2%E3%80%81ParNew%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.2.</span> <span class="nav-text">2、ParNew收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#3%E3%80%81Parallel-Scavenge%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.3.</span> <span class="nav-text">3、Parallel Scavenge收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#4%E3%80%81Serial-Old%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.4.</span> <span class="nav-text">4、Serial Old收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#5%E3%80%81Parallel-Old%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.5.</span> <span class="nav-text">5、Parallel Old收集器</span></a></li><li class="nav-item nav-level-4"><a class="nav-link" href="#6%E3%80%81CMS%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.6.</span> <span class="nav-text">6、CMS收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-5"><a class="nav-link" href="#CMS%E6%94%B6%E9%9B%86%E5%99%A8%E7%9A%84%E7%BC%BA%E7%82%B9%EF%BC%9A"><span class="nav-number">1.6.1.</span> <span class="nav-text">CMS收集器的缺点：</span></a></li></ol></li><li class="nav-item nav-level-4"><a class="nav-link" href="#7%E3%80%81Garbage-First%EF%BC%88G1%EF%BC%89%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.7.</span> <span class="nav-text">7、Garbage First（G1）收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-5"><a class="nav-link" href="#7-1%E3%80%81%E5%A4%87%E6%B3%A8%EF%BC%9A"><span class="nav-number">1.7.1.</span> <span class="nav-text">7.1、备注：</span></a></li></ol></li><li class="nav-item nav-level-4"><a class="nav-link" href="#8%E3%80%81Shenandoah%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.8.</span> <span class="nav-text">8、Shenandoah收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-5"><a class="nav-link" href="#8-1%E3%80%81Shenandoah%E4%B8%8EG1%E7%9A%84%E5%8C%BA%E5%88%AB%EF%BC%9A"><span class="nav-number">1.8.1.</span> <span class="nav-text">8.1、Shenandoah与G1的区别：</span></a></li><li class="nav-item nav-level-5"><a class="nav-link" href="#8-2%E3%80%81Shenandoah%E5%B7%A5%E4%BD%9C%E8%BF%87%E7%A8%8B"><span class="nav-number">1.8.2.</span> <span class="nav-text">8.2、Shenandoah工作过程</span></a></li></ol></li><li class="nav-item nav-level-4"><a class="nav-link" href="#9%E3%80%81ZGC%E6%94%B6%E9%9B%86%E5%99%A8"><span class="nav-number">1.9.</span> <span class="nav-text">9、ZGC收集器</span></a><ol class="nav-child"><li class="nav-item nav-level-5"><a class="nav-link" href="#9-1%E3%80%81ZGC%E7%9A%84%E8%BF%90%E4%BD%9C%E8%BF%87%E7%A8%8B"><span class="nav-number">1.9.1.</span> <span class="nav-text">9.1、ZGC的运作过程</span></a></li></ol></li></ol></li></ol></div>
       </div>
       <!--/noindex-->
 
